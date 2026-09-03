@@ -18,6 +18,11 @@ Environment=JWT_SECRET_FILE=/mnt/apps/openvpn-mgmt/.jwt_secret
 Environment=ADMIN_PASSWORD_FILE=/mnt/apps/openvpn-mgmt/.admin_password
 Environment=ADMIN_USER=admin
 
+# Optional: use the actual OpenVPN listener for dashboard server status.
+# Set these to match the OpenVPN server config, e.g. port 1194 / proto udp.
+# Environment=OPENVPN_LISTEN_PORT=1194
+# Environment=OPENVPN_LISTEN_PROTO=udp
+
 # Security
 ProtectSystem=strict
 ProtectHome=true
