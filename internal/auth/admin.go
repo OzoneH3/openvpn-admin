@@ -9,11 +9,12 @@ import (
 // IssueAdminToken returns a signed JWT identifying the WebUI admin. The
 // SPA stores this in localStorage and presents it via Authorization headers.
 func (m *JWTManager) IssueAdminToken(username string) (string, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	claims := jwt.MapClaims{
 		"sub":  username,
 		"role": "admin",
 		"iat":  now.Unix(),
+		"nbf":  now.Unix(),
 		"exp":  now.Add(m.config.AccessTTL).Unix(),
 		"iss":  m.config.Issuer,
 	}
@@ -25,9 +26,13 @@ func (m *JWTManager) IssueAdminToken(username string) (string, error) {
 // the embedded subject. It accepts either bare admin tokens or full Claims
 // access tokens issued by the original GenerateTokenPair flow.
 func (m *JWTManager) VerifyAdminToken(tokenString string) (string, bool) {
-	parsed, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
-		return m.config.AccessSecret, nil
-	})
+	parsed, err := jwt.Parse(
+		tokenString,
+		func(t *jwt.Token) (any, error) { return m.config.AccessSecret, nil },
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(m.config.Issuer),
+		jwt.WithExpirationRequired(),
+	)
 	if err != nil || !parsed.Valid {
 		return "", false
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Config holds application configuration
@@ -30,7 +31,7 @@ type Config struct {
 	// SPA dashboard directory served at /
 	DashboardDir string
 
-	// Admin auth (env-var only for now)
+	// Admin auth
 	AdminUser     string
 	AdminPassword string
 
@@ -39,69 +40,59 @@ type Config struct {
 	ServiceUnit string
 }
 
-// Load loads configuration from environment variables
+// Load loads configuration from environment variables.
 func Load() (*Config, error) {
 	cfg := &Config{
-		// Database
-		DBPath: getEnv("DB_PATH", "./data/openvpn.db"),
-
-		// HTTP Server
-		Port: getEnv("PORT", "8080"),
-
-		// EasyRSA paths
-		EasyRSAPath: getEnv("EASYRSA_PATH", "/etc/openvpn/easy-rsa"),
-		OpenVPNPath: getEnv("OPENVPN_PATH", "/etc/openvpn"),
-		ClientsDir:  getEnv("CLIENTS_DIR", "/etc/openvpn/clients"),
-
-		// Worker
-		WorkerCount: getEnvInt("WORKER_COUNT", 2),
-		QueueSize:   getEnvInt("QUEUE_SIZE", 100),
-
-		// Dashboard
+		DBPath:       getEnv("DB_PATH", "./data/openvpn.db"),
+		Port:         getEnv("PORT", "8080"),
+		EasyRSAPath:  getEnv("EASYRSA_PATH", "/etc/openvpn/easy-rsa"),
+		OpenVPNPath:  getEnv("OPENVPN_PATH", "/etc/openvpn"),
+		ClientsDir:   getEnv("CLIENTS_DIR", "/etc/openvpn/clients"),
+		WorkerCount:  getEnvInt("WORKER_COUNT", 2),
+		QueueSize:    getEnvInt("QUEUE_SIZE", 100),
 		DashboardDir: getEnv("DASHBOARD_DIR", "./dashboard"),
-
-		// Admin auth
-		AdminUser:     getEnv("ADMIN_USER", "admin"),
-		AdminPassword: getEnv("ADMIN_PASSWORD", ""),
-
-		// OpenVPN runtime
-		StatusFile:  getEnv("STATUS_FILE", "/var/log/openvpn/status.log"),
-		ServiceUnit: getEnv("SERVICE_UNIT", "openvpn-server@server.service"),
+		AdminUser:    getEnv("ADMIN_USER", "admin"),
+		StatusFile:   getEnv("STATUS_FILE", "/var/log/openvpn/status.log"),
+		ServiceUnit:  getEnv("SERVICE_UNIT", "openvpn-server@server.service"),
 	}
 
-	// JWT Secret - required
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		// Try to read from file
-		jwtSecretFile := os.Getenv("JWT_SECRET_FILE")
-		if jwtSecretFile != "" {
-			data, err := os.ReadFile(jwtSecretFile)
-			if err != nil {
-				return nil, fmt.Errorf("JWT_SECRET not set and failed to read JWT_SECRET_FILE: %w", err)
-			}
-			jwtSecret = string(data)
-		}
+	jwtSecret, err := readRequiredSecret("JWT_SECRET", "JWT_SECRET_FILE")
+	if err != nil {
+		return nil, fmt.Errorf("JWT secret: %w", err)
 	}
-
-	if jwtSecret == "" {
-		return nil, fmt.Errorf("JWT_SECRET (or JWT_SECRET_FILE) is required; generate one with: openssl rand -hex 32")
-	}
-
 	cfg.JWTSecret = jwtSecret
 
-	// Ensure directories exist
-	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0755); err != nil {
+	adminPassword, err := readRequiredSecret("ADMIN_PASSWORD", "ADMIN_PASSWORD_FILE")
+	if err != nil {
+		return nil, fmt.Errorf("admin password: %w", err)
+	}
+	cfg.AdminPassword = adminPassword
+
+	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
-
-	// best-effort — server will run even if it can't pre-create the dir
-	// (the manager handles MkdirAll lazily before writing).
 	_ = os.MkdirAll(cfg.ClientsDir, 0o755)
 
 	return cfg, nil
 }
 
-// getEnv gets an environment variable with a default value
+func readRequiredSecret(envName, fileEnvName string) (string, error) {
+	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+		return value, nil
+	}
+	if path := strings.TrimSpace(os.Getenv(fileEnvName)); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("%s is not set and %s could not be read: %w", envName, fileEnvName, err)
+		}
+		if value := strings.TrimSpace(string(data)); value != "" {
+			return value, nil
+		}
+		return "", fmt.Errorf("%s points to an empty secret file", fileEnvName)
+	}
+	return "", fmt.Errorf("%s (or %s) is required", envName, fileEnvName)
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -109,7 +100,6 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvInt gets an environment variable as an integer with a default value
 func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if i, err := strconv.Atoi(value); err == nil {
