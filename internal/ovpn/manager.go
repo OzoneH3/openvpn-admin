@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,11 +17,13 @@ import (
 // commands. It mirrors what `openvpn-install.sh` does for client add/revoke
 // so the WebUI's actions converge with the script's.
 type Manager struct {
-	OpenVPNDir string // /etc/openvpn
-	EasyRSADir string // /etc/openvpn/easy-rsa
-	ClientsDir string // where .ovpn files are written (default OpenVPNDir+"/clients")
-	StatusPath string // /var/log/openvpn/status.log
-	ServiceUnit string // openvpn-server@server.service
+	OpenVPNDir string
+	EasyRSADir string
+	ClientsDir string
+	StatusPath string
+	ServiceUnit string
+	ListenPort int
+	ListenProto string
 }
 
 // NewManager applies defaults that match the upstream openvpn-install.sh.
@@ -51,14 +54,10 @@ func NewManager(openVPNDir, easyRSADir, clientsDir, statusPath, unit string) *Ma
 
 var validCN = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
 
-// AddClient runs `easyrsa build-client-full` for cn (passwordless), then
-// assembles the .ovpn bundle the same way openvpn-install.sh does.
 func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 	if !validCN.MatchString(cn) {
 		return nil, fmt.Errorf("invalid common name: %q", cn)
 	}
-
-	// Refuse if a cert with this CN already exists in the index.
 	certs, err := ReadIndex(m.EasyRSADir)
 	if err == nil {
 		for _, c := range certs {
@@ -80,7 +79,6 @@ func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("assemble .ovpn: %w", err)
 	}
-
 	if err := os.MkdirAll(m.ClientsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("ensure clients dir: %w", err)
 	}
@@ -91,8 +89,6 @@ func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 	return bundle, nil
 }
 
-// BuildOVPN re-renders the .ovpn bundle for an existing CN (no easyrsa run).
-// Useful when a user re-downloads their config.
 func (m *Manager) BuildOVPN(cn string) ([]byte, error) {
 	if !validCN.MatchString(cn) {
 		return nil, fmt.Errorf("invalid common name: %q", cn)
@@ -128,13 +124,9 @@ func (m *Manager) buildOVPN(cn string) ([]byte, error) {
 	b.WriteString("<ca>\n")
 	b.Write(ca)
 	b.WriteString("</ca>\n")
-
-	// `openvpn-install.sh` only emits the BEGIN/END section of the issued
-	// cert (strips human-readable header).
 	b.WriteString("<cert>\n")
 	b.Write(extractCertPEM(crt))
 	b.WriteString("</cert>\n")
-
 	b.WriteString("<key>\n")
 	b.Write(key)
 	b.WriteString("</key>\n")
@@ -163,8 +155,6 @@ func extractCertPEM(in []byte) []byte {
 	return []byte(s[i:j+len(end)] + "\n")
 }
 
-// RevokeClient runs the same easyrsa revoke + gen-crl flow as the upstream
-// script and reloads the CRL on the server.
 func (m *Manager) RevokeClient(ctx context.Context, cn string) error {
 	if !validCN.MatchString(cn) {
 		return fmt.Errorf("invalid common name: %q", cn)
@@ -187,25 +177,66 @@ func (m *Manager) RevokeClient(ctx context.Context, cn string) error {
 	if data, err := os.ReadFile(src); err == nil {
 		_ = os.WriteFile(dst, data, 0o644)
 	}
-
-	// Forget cached client config and ovpn file.
 	_ = os.Remove(filepath.Join(m.ClientsDir, cn+".ovpn"))
-
-	// Drop any active session for this CN by SIGHUPing the server. We
-	// avoid bouncing the unit so other peers stay connected; instead we
-	// rely on CRL-reload via management socket if available, falling back
-	// to nothing — a fresh handshake will be rejected against the new CRL.
 	return nil
 }
 
-// IsServiceActive returns whether the openvpn server unit is running.
+// IsServiceActive reports whether OpenVPN is running. If a listen port is
+// configured, the local kernel socket table is authoritative. This supports
+// both UDP and TCP OpenVPN deployments without depending on a systemd unit
+// name. If no port is configured, the legacy systemd check is used.
 func (m *Manager) IsServiceActive(ctx context.Context) bool {
+	if m.ListenPort > 0 {
+		return localPortListening(m.ListenProto, m.ListenPort)
+	}
 	cmd := exec.CommandContext(ctx, "systemctl", "is-active", m.ServiceUnit)
 	out, _ := cmd.Output()
 	return strings.TrimSpace(string(out)) == "active"
 }
 
-// ServiceUptime returns a human "Xd YYh:MM" uptime (best-effort, "" if unavailable).
+func localPortListening(proto string, port int) bool {
+	proto = strings.ToLower(strings.TrimSpace(proto))
+	var paths []string
+	switch proto {
+	case "tcp":
+		paths = []string{"/proc/net/tcp", "/proc/net/tcp6"}
+	case "udp":
+		paths = []string{"/proc/net/udp", "/proc/net/udp6"}
+	default:
+		return false
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err == nil && portListed(data, port, proto == "tcp") {
+			return true
+		}
+	}
+	return false
+}
+
+func portListed(data []byte, port int, requireTCPListen bool) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[0] == "sl" {
+			continue
+		}
+		local := fields[1]
+		i := strings.LastIndexByte(local, ':')
+		if i < 0 {
+			continue
+		}
+		p, err := strconv.ParseUint(local[i+1:], 16, 16)
+		if err != nil || int(p) != port {
+			continue
+		}
+		if requireTCPListen && fields[3] != "0A" {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (m *Manager) ServiceUptime(ctx context.Context) string {
 	cmd := exec.CommandContext(ctx, "systemctl", "show", m.ServiceUnit, "--property=ActiveEnterTimestamp", "--value")
 	out, err := cmd.Output()
