@@ -18,6 +18,14 @@ Environment=JWT_SECRET_FILE=/mnt/apps/openvpn-mgmt/.jwt_secret
 Environment=ADMIN_PASSWORD_FILE=/mnt/apps/openvpn-mgmt/.admin_password
 Environment=ADMIN_USER=admin
 
+# Encrypted CA support. The file contains only the CA passphrase and should be 0600.
+# Environment=CA_PASSWORD_FILE=/mnt/apps/openvpn-mgmt/.ca_password
+
+# Client profile source files. Override when openvpn-install.sh keeps these outside /etc/openvpn.
+# Environment=CLIENT_TEMPLATE_PATH=/mnt/scripts/openvpn/client-template.txt
+# Environment=TLS_CRYPT_KEY_PATH=/mnt/scripts/openvpn/tls-crypt.key
+# Environment=TLS_AUTH_KEY_PATH=/mnt/scripts/openvpn/tls-auth.key
+
 # Optional: use the actual OpenVPN listener for dashboard server status.
 # Set these to match the OpenVPN server config, e.g. port 1194 / proto udp.
 # Environment=OPENVPN_LISTEN_PORT=1194
