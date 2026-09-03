@@ -11,7 +11,7 @@ ExecStart=/mnt/apps/openvpn-mgmt/openvpn-mgmt serve
 Restart=always
 RestartSec=10
 Environment=DB_PATH=/mnt/apps/openvpn-mgmt/data/openvpn.db
-Environment=EASYRSA_PATH=/etc/openvpn/easy-rsa
+Environment=EASYRSA_PATH=/mnt/scripts/openvpn/ca_dir
 Environment=OPENVPN_PATH=/etc/openvpn
 Environment=CLIENTS_DIR=/etc/openvpn/clients
 Environment=JWT_SECRET_FILE=/mnt/apps/openvpn-mgmt/.jwt_secret
@@ -23,7 +23,7 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/mnt/apps/openvpn-mgmt/data /etc/openvpn/clients /etc/openvpn/easy-rsa/pki
+ReadWritePaths=/mnt/apps/openvpn-mgmt/data -/etc/openvpn/clients /mnt/scripts/openvpn/ca_dir/pki
 
 [Install]
 WantedBy=multi-user.target
