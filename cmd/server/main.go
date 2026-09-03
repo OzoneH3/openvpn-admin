@@ -33,10 +33,12 @@ func main() {
 		cfg.StatusFile,
 		cfg.ServiceUnit,
 	)
+	mgr.ListenPort = cfg.OpenVPNListenPort
+	mgr.ListenProto = cfg.OpenVPNListenProto
 
 	app := api.NewServer(nil, nil, api.ServerConfig{
 		JWTSecret:      cfg.JWTSecret,
-		AllowedOrigins: nil, // same-origin only by default
+		AllowedOrigins: nil,
 		RequireAuth:    true,
 		DashboardDir:   cfg.DashboardDir,
 		Manager:        mgr,
