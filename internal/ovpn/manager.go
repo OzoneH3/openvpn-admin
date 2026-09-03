@@ -13,17 +13,19 @@ import (
 	"time"
 )
 
-// Manager wires together the on-disk OpenVPN/easyrsa state with shell
-// commands. It mirrors what `openvpn-install.sh` does for client add/revoke
-// so the WebUI's actions converge with the script's.
+// Manager wires together the on-disk OpenVPN/easyrsa state with shell commands.
 type Manager struct {
-	OpenVPNDir string
-	EasyRSADir string
-	ClientsDir string
-	StatusPath string
-	ServiceUnit string
-	ListenPort int
-	ListenProto string
+	OpenVPNDir         string
+	EasyRSADir         string
+	ClientsDir         string
+	StatusPath         string
+	ServiceUnit        string
+	ListenPort         int
+	ListenProto        string
+	ClientTemplatePath string
+	TLSCryptKeyPath    string
+	TLSAuthKeyPath     string
+	CAPasswordFile     string
 }
 
 // NewManager applies defaults that match the upstream openvpn-install.sh.
@@ -44,15 +46,31 @@ func NewManager(openVPNDir, easyRSADir, clientsDir, statusPath, unit string) *Ma
 		unit = "openvpn-server@server.service"
 	}
 	return &Manager{
-		OpenVPNDir:  openVPNDir,
-		EasyRSADir:  easyRSADir,
-		ClientsDir:  clientsDir,
-		StatusPath:  statusPath,
-		ServiceUnit: unit,
+		OpenVPNDir:         openVPNDir,
+		EasyRSADir:         easyRSADir,
+		ClientsDir:         clientsDir,
+		StatusPath:         statusPath,
+		ServiceUnit:        unit,
+		ClientTemplatePath: filepath.Join(openVPNDir, "client-template.txt"),
+		TLSCryptKeyPath:    filepath.Join(openVPNDir, "tls-crypt.key"),
+		TLSAuthKeyPath:     filepath.Join(openVPNDir, "tls-auth.key"),
 	}
 }
 
-var validCN = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
+// Dots are permitted because existing EasyRSA PKIs commonly contain DNS-like
+// client CNs. Slashes, whitespace and shell metacharacters remain rejected.
+var validCN = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+// caArgs prepends EasyRSA global options needed for commands which use the CA
+// private key. The passphrase itself is read by OpenSSL from a protected file;
+// it is never included in argv, environment values, errors, or logs.
+func (m *Manager) caArgs(args ...string) []string {
+	out := []string{"--batch"}
+	if m.CAPasswordFile != "" {
+		out = append(out, "--passin=file:"+m.CAPasswordFile)
+	}
+	return append(out, args...)
+}
 
 func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 	if !validCN.MatchString(cn) {
@@ -67,7 +85,9 @@ func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "./easyrsa", "--batch", "build-client-full", cn, "nopass")
+	// The CA may be encrypted while the new client private key remains
+	// passwordless via the command-level "nopass" option.
+	cmd := exec.CommandContext(ctx, "./easyrsa", m.caArgs("build-client-full", cn, "nopass")...)
 	cmd.Dir = m.EasyRSADir
 	cmd.Env = append(os.Environ(), "EASYRSA_CERT_EXPIRE=3650")
 	out, err := cmd.CombinedOutput()
@@ -98,10 +118,9 @@ func (m *Manager) BuildOVPN(cn string) ([]byte, error) {
 
 func (m *Manager) buildOVPN(cn string) ([]byte, error) {
 	pki := filepath.Join(m.EasyRSADir, "pki")
-	tmplPath := filepath.Join(m.OpenVPNDir, "client-template.txt")
-	tmpl, err := os.ReadFile(tmplPath)
+	tmpl, err := os.ReadFile(m.ClientTemplatePath)
 	if err != nil {
-		return nil, fmt.Errorf("read client-template.txt: %w", err)
+		return nil, fmt.Errorf("read client template %s: %w", m.ClientTemplatePath, err)
 	}
 	ca, err := os.ReadFile(filepath.Join(pki, "ca.crt"))
 	if err != nil {
@@ -131,11 +150,11 @@ func (m *Manager) buildOVPN(cn string) ([]byte, error) {
 	b.Write(key)
 	b.WriteString("</key>\n")
 
-	if data, err := os.ReadFile(filepath.Join(m.OpenVPNDir, "tls-crypt.key")); err == nil {
+	if data, err := os.ReadFile(m.TLSCryptKeyPath); err == nil {
 		b.WriteString("<tls-crypt>\n")
 		b.Write(data)
 		b.WriteString("</tls-crypt>\n")
-	} else if data, err := os.ReadFile(filepath.Join(m.OpenVPNDir, "tls-auth.key")); err == nil {
+	} else if data, err := os.ReadFile(m.TLSAuthKeyPath); err == nil {
 		b.WriteString("key-direction 1\n<tls-auth>\n")
 		b.Write(data)
 		b.WriteString("</tls-auth>\n")
@@ -160,13 +179,13 @@ func (m *Manager) RevokeClient(ctx context.Context, cn string) error {
 		return fmt.Errorf("invalid common name: %q", cn)
 	}
 
-	cmd := exec.CommandContext(ctx, "./easyrsa", "--batch", "revoke", cn)
+	cmd := exec.CommandContext(ctx, "./easyrsa", m.caArgs("revoke", cn)...)
 	cmd.Dir = m.EasyRSADir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("easyrsa revoke %s: %w\n%s", cn, err, out)
 	}
 
-	cmd = exec.CommandContext(ctx, "./easyrsa", "--batch", "gen-crl")
+	cmd = exec.CommandContext(ctx, "./easyrsa", m.caArgs("gen-crl")...)
 	cmd.Dir = m.EasyRSADir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("easyrsa gen-crl: %w\n%s", err, out)
@@ -181,10 +200,6 @@ func (m *Manager) RevokeClient(ctx context.Context, cn string) error {
 	return nil
 }
 
-// IsServiceActive reports whether OpenVPN is running. If a listen port is
-// configured, the local kernel socket table is authoritative. This supports
-// both UDP and TCP OpenVPN deployments without depending on a systemd unit
-// name. If no port is configured, the legacy systemd check is used.
 func (m *Manager) IsServiceActive(ctx context.Context) bool {
 	if m.ListenPort > 0 {
 		return localPortListening(m.ListenProto, m.ListenPort)

@@ -13,8 +13,6 @@ type StaticConfig struct {
 	DashboardDir string
 }
 
-// staticHandler serves the SPA. Any request that isn't matched by /api or
-// /health falls through here and gets dashboard/index.html.
 func staticHandler(dir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -22,7 +20,6 @@ func staticHandler(dir string) http.HandlerFunc {
 			return
 		}
 
-		// Serve specific file if it exists; otherwise fall back to index.html.
 		clean := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
 		if clean == "" || clean == "." || clean == "ovpn" || clean == "ovpn/" {
 			clean = "index.html"
@@ -30,8 +27,6 @@ func staticHandler(dir string) http.HandlerFunc {
 		if strings.HasPrefix(clean, "ovpn/") {
 			clean = strings.TrimPrefix(clean, "ovpn/")
 		}
-
-		// Prevent directory traversal.
 		if strings.Contains(clean, "..") {
 			http.NotFound(w, r)
 			return
@@ -47,7 +42,6 @@ func staticHandler(dir string) http.HandlerFunc {
 			return
 		}
 
-		// SPA fallback.
 		indexPath := filepath.Join(dir, "index.html")
 		info, err := os.Stat(indexPath)
 		if err != nil {
@@ -58,20 +52,66 @@ func staticHandler(dir string) http.HandlerFunc {
 	}
 }
 
-// serveDashboardIndex rewrites the SPA's internal API URLs to the public
-// /ovpn/api namespace. The canonical Go handlers remain available at /api so
-// localhost tooling and existing scripts continue to work unchanged.
 func serveDashboardIndex(w http.ResponseWriter, r *http.Request, path string, info os.FileInfo) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		http.Error(w, "failed to read dashboard", http.StatusInternalServerError)
 		return
 	}
-	body := strings.ReplaceAll(string(data), "/api/v1/", "/ovpn/api/v1/")
+	body := rewriteDashboard(string(data))
 	http.ServeContent(w, r, "index.html", info.ModTime(), strings.NewReader(body))
 }
 
-// healthHandler is a lightweight liveness probe.
+// rewriteDashboard keeps the upstream single-file SPA small while adding the
+// deployment-specific /ovpn API prefix and the extra EasyRSA export controls.
+func rewriteDashboard(body string) string {
+	body = strings.Replace(body,
+		`    configURL: (cn) => "/api/v1/users/"+encodeURIComponent(cn)+"/config",`,
+		`    configURL: (cn) => "/api/v1/users/"+encodeURIComponent(cn)+"/config",
+    exportURL: (cn,format) => "/api/v1/exports/"+encodeURIComponent(cn)+"/"+encodeURIComponent(format),`,
+		1,
+	)
+
+	body = strings.ReplaceAll(body,
+		`h("button",{class:"btn btn--sm",title:"download .ovpn", onclick:()=>downloadOVPN(u.username)}, "↓ .ovpn"),`,
+		`h("button",{class:"btn btn--sm",title:"download .ovpn", onclick:()=>downloadOVPN(u.username)}, "↓ .ovpn"),
+        h("button",{class:"btn btn--sm",title:"other export formats", onclick:()=>downloadExportPrompt(u.username)}, "↓ more"),`,
+	)
+
+	const signOut = `function signOut(){`
+	if strings.Contains(body, signOut) && !strings.Contains(body, "function downloadExportPrompt(") {
+		exportJS := `function downloadExportPrompt(cn){
+  const format = (prompt("Export format: inline, p12, p7, p8, p1", "p12") || "").trim().toLowerCase();
+  if (!format) return;
+  if (!["inline","p12","p7","p8","p1"].includes(format)) { Toast.err("unsupported export format"); return; }
+  downloadClientExport(cn, format);
+}
+
+async function downloadClientExport(cn, format){
+  try {
+    const t = API.token();
+    const res = await fetch(API.exportURL(cn, format), { headers: t ? { Authorization: "Bearer " + t } : {} });
+    if (!res.ok) {
+      const j = await res.json().catch(()=>({error:res.statusText}));
+      throw new Error(j.error || res.statusText);
+    }
+    const blob = await res.blob();
+    const ext = {inline:"inline",p12:"p12",p7:"p7b",p8:"p8",p1:"p1"}[format] || format;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = cn + "." + ext;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  } catch (e) { Toast.err("export failed: " + e.message); }
+}
+
+`
+		body = strings.Replace(body, signOut, exportJS+signOut, 1)
+	}
+
+	return strings.ReplaceAll(body, "/api/v1/", "/ovpn/api/v1/")
+}
+
 func healthHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -80,14 +120,11 @@ func healthHandler() http.HandlerFunc {
 	}
 }
 
-// loginRequest matches the SPA login form payload.
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
-// loginHandler is a demo authentication endpoint that issues a JWT for
-// the SPA. Real password hashing/storage is out of scope for this prototype.
 func (s *Server) loginHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
@@ -110,9 +147,6 @@ func (s *Server) loginHandler() http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "username and password required")
 			return
 		}
-
-		// Demo policy: only `admin` is permitted, and the literal "wrong"
-		// password is rejected so the UI can demonstrate failure paths.
 		if req.Username != "admin" || req.Password == "wrong" {
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return

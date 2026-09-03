@@ -18,6 +18,16 @@ Environment=JWT_SECRET_FILE=/mnt/apps/openvpn-mgmt/.jwt_secret
 Environment=ADMIN_PASSWORD_FILE=/mnt/apps/openvpn-mgmt/.admin_password
 Environment=ADMIN_USER=admin
 
+# Encrypted CA support. The file contains only the CA passphrase and should be 0600.
+# Environment=CA_PASSWORD_FILE=/mnt/apps/openvpn-mgmt/.ca_password
+
+# Client profile source. This deployment keeps the reusable client settings in
+# /mnt/scripts/openvpn/client.conf. TLS key paths are optional; leave them unset
+# when the OpenVPN server config does not use tls-auth/tls-crypt.
+# Environment=CLIENT_TEMPLATE_PATH=/mnt/scripts/openvpn/client.conf
+# Environment=TLS_CRYPT_KEY_PATH=/path/to/tls-crypt.key
+# Environment=TLS_AUTH_KEY_PATH=/path/to/tls-auth.key
+
 # Optional: use the actual OpenVPN listener for dashboard server status.
 # Set these to match the OpenVPN server config, e.g. port 1194 / proto udp.
 # Environment=OPENVPN_LISTEN_PORT=1194
