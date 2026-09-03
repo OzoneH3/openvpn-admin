@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net"
 	"net/http"
@@ -87,10 +88,10 @@ func loginClientKey(r *http.Request) string {
 func constantTimeCredentialsEqual(gotUser, gotPassword, wantUser, wantPassword string) bool {
 	// Compare fixed-length SHA-256 digests so timing does not reveal whether
 	// the username or password length/content matched first.
-	gotUserDigest := sha256Sum(gotUser)
-	wantUserDigest := sha256Sum(wantUser)
-	gotPasswordDigest := sha256Sum(gotPassword)
-	wantPasswordDigest := sha256Sum(wantPassword)
+	gotUserDigest := sha256.Sum256([]byte(gotUser))
+	wantUserDigest := sha256.Sum256([]byte(wantUser))
+	gotPasswordDigest := sha256.Sum256([]byte(gotPassword))
+	wantPasswordDigest := sha256.Sum256([]byte(wantPassword))
 
 	userOK := subtle.ConstantTimeCompare(gotUserDigest[:], wantUserDigest[:])
 	passwordOK := subtle.ConstantTimeCompare(gotPasswordDigest[:], wantPasswordDigest[:])
