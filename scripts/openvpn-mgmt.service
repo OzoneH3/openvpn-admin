@@ -15,10 +15,14 @@ Environment=EASYRSA_PATH=/etc/openvpn/easy-rsa
 Environment=OPENVPN_PATH=/etc/openvpn
 Environment=CLIENTS_DIR=/etc/openvpn/clients
 Environment=JWT_SECRET_FILE=/opt/openvpn-mgmt/.jwt_secret
+Environment=ADMIN_PASSWORD_FILE=/opt/openvpn-mgmt/.admin_password
+Environment=ADMIN_USER=admin
 
 # Security
 ProtectSystem=strict
 ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
 ReadWritePaths=/opt/openvpn-mgmt/data /etc/openvpn/clients /etc/openvpn/easy-rsa/pki
 
 [Install]

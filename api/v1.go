@@ -19,6 +19,7 @@ type V1Server struct {
 	adminPassword string
 	jwtSigner     JWTSigner
 	startedAt     time.Time
+	loginLimiter  *loginLimiter
 }
 
 // JWTSigner is a tiny seam so we can reuse the existing auth.JWTManager
@@ -38,6 +39,7 @@ func NewV1Server(mgr *ovpn.Manager, adminUser, adminPassword string, signer JWTS
 		adminPassword: adminPassword,
 		jwtSigner:     signer,
 		startedAt:     time.Now(),
+		loginLimiter:  newLoginLimiter(),
 	}
 }
 
@@ -121,20 +123,39 @@ func (s *V1Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
+	if s.adminPassword == "" {
+		writeError(w, http.StatusServiceUnavailable, "admin authentication is not configured")
+		return
+	}
+
+	clientKey := loginClientKey(r)
+	if !s.loginLimiter.allowed(clientKey) {
+		w.Header().Set("Retry-After", "900")
+		writeError(w, http.StatusTooManyRequests, "too many failed login attempts")
+		return
+	}
+
 	var req loginReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.Username != s.adminUser || req.Password == "" || req.Password != s.adminPassword {
+
+	if req.Username == "" || req.Password == "" || !constantTimeCredentialsEqual(req.Username, req.Password, s.adminUser, s.adminPassword) {
+		s.loginLimiter.failure(clientKey)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+
+	s.loginLimiter.success(clientKey)
 	tok, err := s.jwtSigner.IssueAdminToken(req.Username)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "issue token: "+err.Error())
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, loginResp{Token: tok, Username: req.Username, Role: "admin"})
 }
 
