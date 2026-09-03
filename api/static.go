@@ -22,12 +22,16 @@ func staticHandler(dir string) http.HandlerFunc {
 			return
 		}
 
-		// Serve specific file if it exists; otherwise fall back to index.html
+		// Serve specific file if it exists; otherwise fall back to index.html.
 		clean := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
-		if clean == "" || clean == "." {
+		if clean == "" || clean == "." || clean == "ovpn" || clean == "ovpn/" {
 			clean = "index.html"
 		}
-		// Prevent directory traversal
+		if strings.HasPrefix(clean, "ovpn/") {
+			clean = strings.TrimPrefix(clean, "ovpn/")
+		}
+
+		// Prevent directory traversal.
 		if strings.Contains(clean, "..") {
 			http.NotFound(w, r)
 			return
@@ -35,13 +39,36 @@ func staticHandler(dir string) http.HandlerFunc {
 
 		full := filepath.Join(dir, clean)
 		if info, err := os.Stat(full); err == nil && !info.IsDir() {
+			if clean == "index.html" {
+				serveDashboardIndex(w, r, full, info)
+				return
+			}
 			http.ServeFile(w, r, full)
 			return
 		}
 
-		// SPA fallback
-		http.ServeFile(w, r, filepath.Join(dir, "index.html"))
+		// SPA fallback.
+		indexPath := filepath.Join(dir, "index.html")
+		info, err := os.Stat(indexPath)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		serveDashboardIndex(w, r, indexPath, info)
 	}
+}
+
+// serveDashboardIndex rewrites the SPA's internal API URLs to the public
+// /ovpn/api namespace. The canonical Go handlers remain available at /api so
+// localhost tooling and existing scripts continue to work unchanged.
+func serveDashboardIndex(w http.ResponseWriter, r *http.Request, path string, info os.FileInfo) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, "failed to read dashboard", http.StatusInternalServerError)
+		return
+	}
+	body := strings.ReplaceAll(string(data), "/api/v1/", "/ovpn/api/v1/")
+	http.ServeContent(w, r, "index.html", info.ModTime(), strings.NewReader(body))
 }
 
 // healthHandler is a lightweight liveness probe.
