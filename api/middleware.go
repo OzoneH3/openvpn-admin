@@ -45,9 +45,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Create a response wrapper to capture status code
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
 		next.ServeHTTP(wrapped, r)
 
 		duration := time.Since(start)
@@ -74,32 +72,51 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// CORSMiddleware handles CORS headers
+// CORSMiddleware handles CORS headers. Same-origin requests do not need CORS
+// headers, so an empty allow-list safely disables cross-origin API access.
 func CORSMiddleware(allowedOrigins []string) Middleware {
+	allowedSet := make(map[string]struct{}, len(allowedOrigins))
+	wildcard := false
+	for _, origin := range allowedOrigins {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if origin == "*" {
+			wildcard = true
+			continue
+		}
+		allowedSet[origin] = struct{}{}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
+			if origin == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
 
-			// Check if origin is allowed
-			allowed := false
-			if len(allowedOrigins) == 0 || (len(allowedOrigins) == 1 && allowedOrigins[0] == "*") {
-				allowed = true
-			} else {
-				for _, o := range allowedOrigins {
-					if o == origin {
-						allowed = true
-						break
-					}
+			_, explicitlyAllowed := allowedSet[origin]
+			allowed := wildcard || explicitlyAllowed
+			if !allowed {
+				if r.Method == http.MethodOptions {
+				http.Error(w, "CORS origin denied", http.StatusForbidden)
+					return
 				}
+				next.ServeHTTP(w, r)
+				return
 			}
 
-			if allowed && origin != "" {
+			if wildcard {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Add("Vary", "Origin")
 			}
-
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 
 			if r.Method == http.MethodOptions {
@@ -116,30 +133,24 @@ func CORSMiddleware(allowedOrigins []string) Middleware {
 func AuthMiddleware(jwtManager *auth.JWTManager) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Extract token from header
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				writeError(w, http.StatusUnauthorized, "Authorization header required")
 				return
 			}
 
-			// Parse Bearer token
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 				writeError(w, http.StatusUnauthorized, "Invalid authorization header format")
 				return
 			}
 
-			tokenString := parts[1]
-
-			// Validate token
-			claims, err := jwtManager.ValidateAccessToken(tokenString)
+			claims, err := jwtManager.ValidateAccessToken(parts[1])
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, fmt.Sprintf("Invalid token: %v", err))
 				return
 			}
 
-			// Add claims to context
 			ctx := auth.ContextWithClaims(r.Context(), claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -166,7 +177,6 @@ func RequireRole(role string) Middleware {
 	}
 }
 
-// responseWriter wraps http.ResponseWriter to capture status code
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
@@ -188,7 +198,6 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	return rw.ResponseWriter.Write(b)
 }
 
-// writeJSON writes a successful JSON response
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -198,7 +207,6 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	})
 }
 
-// writeError writes an error JSON response
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
