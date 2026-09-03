@@ -28,6 +28,18 @@ type Manager struct {
 	CAPasswordFile     string
 }
 
+// ClientCreateOptions controls certificate validity and private-key protection.
+type ClientCreateOptions struct {
+	CertDays int
+	Password string
+}
+
+const (
+	defaultClientCertDays = 3650
+	minClientCertDays     = 1
+	maxClientCertDays     = 3650
+)
+
 // NewManager applies defaults that match the upstream openvpn-install.sh.
 func NewManager(openVPNDir, easyRSADir, clientsDir, statusPath, unit string) *Manager {
 	if openVPNDir == "" {
@@ -73,9 +85,24 @@ func (m *Manager) caArgs(args ...string) []string {
 }
 
 func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
+	return m.AddClientWithOptions(ctx, cn, ClientCreateOptions{})
+}
+
+func (m *Manager) AddClientWithOptions(ctx context.Context, cn string, opts ClientCreateOptions) ([]byte, error) {
 	if !validCN.MatchString(cn) {
 		return nil, fmt.Errorf("invalid common name: %q", cn)
 	}
+	certDays := opts.CertDays
+	if certDays == 0 {
+		certDays = defaultClientCertDays
+	}
+	if certDays < minClientCertDays || certDays > maxClientCertDays {
+		return nil, fmt.Errorf("certificate validity must be between %d and %d days", minClientCertDays, maxClientCertDays)
+	}
+	if len(opts.Password) > 1024 {
+		return nil, fmt.Errorf("client password is too long")
+	}
+
 	certs, err := ReadIndex(m.EasyRSADir)
 	if err == nil {
 		for _, c := range certs {
@@ -85,11 +112,22 @@ func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 		}
 	}
 
-	// The CA may be encrypted while the new client private key remains
-	// passwordless via the command-level "nopass" option.
-	cmd := exec.CommandContext(ctx, "./easyrsa", m.caArgs("build-client-full", cn, "nopass")...)
+	args := m.caArgs()
+	var passFile string
+	if opts.Password == "" {
+		args = append(args, "build-client-full", cn, "nopass")
+	} else {
+		passFile, err = writePassphraseFile(opts.Password)
+		if err != nil {
+			return nil, fmt.Errorf("prepare client password: %w", err)
+		}
+		defer os.Remove(passFile)
+		args = append(args, "--passout=file:"+passFile, "build-client-full", cn)
+	}
+
+	cmd := exec.CommandContext(ctx, "./easyrsa", args...)
 	cmd.Dir = m.EasyRSADir
-	cmd.Env = append(os.Environ(), "EASYRSA_CERT_EXPIRE=3650")
+	cmd.Env = append(os.Environ(), "EASYRSA_CERT_EXPIRE="+strconv.Itoa(certDays))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("easyrsa build-client-full failed: %w\n%s", err, out)
@@ -107,6 +145,31 @@ func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 		return nil, fmt.Errorf("write %s: %w", dst, err)
 	}
 	return bundle, nil
+}
+
+func writePassphraseFile(password string) (string, error) {
+	f, err := os.CreateTemp("", "openvpn-admin-pass-*")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(path)
+		}
+	}()
+	if err = f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if _, err = f.WriteString(password + "\n"); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err = f.Close(); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func (m *Manager) BuildOVPN(cn string) ([]byte, error) {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,10 +15,6 @@ func (s *V1Server) handleClientExport(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireAuth(w, r); !ok {
 		return
 	}
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
 
 	tail := strings.TrimPrefix(r.URL.Path, "/api/v1/exports/")
 	parts := strings.Split(tail, "/")
@@ -26,7 +23,26 @@ func (s *V1Server) handleClientExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	artifact, err := s.mgr.ExportClient(r.Context(), parts[0], parts[1])
+	password := ""
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		var body struct {
+			Password string `json:"password"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+		password = body.Password
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	artifact, err := s.mgr.ExportClientProtected(r.Context(), parts[0], parts[1], password)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

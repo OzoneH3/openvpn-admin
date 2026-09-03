@@ -63,8 +63,22 @@ func serveDashboardIndex(w http.ResponseWriter, r *http.Request, path string, in
 }
 
 // rewriteDashboard keeps the upstream single-file SPA small while adding the
-// deployment-specific /ovpn API prefix and the extra EasyRSA export controls.
+// deployment-specific /ovpn API prefix and certificate management controls.
 func rewriteDashboard(body string) string {
+	body = strings.Replace(body,
+		`    addUser: (username) => call("POST","/api/v1/users",{username}),`,
+		`    addUser: (username) => {
+      const rawDays = (prompt("Certificate validity in days (1-3650)", "3650") || "").trim();
+      if (!rawDays) throw new Error("client creation cancelled");
+      const cert_days = Number(rawDays);
+      if (!Number.isInteger(cert_days) || cert_days < 1 || cert_days > 3650) throw new Error("certificate validity must be between 1 and 3650 days");
+      const password = prompt("Client private-key password (optional; required when using a protected .ovpn)", "");
+      if (password === null) throw new Error("client creation cancelled");
+      return call("POST","/api/v1/users",{username,password,cert_days});
+    },`,
+		1,
+	)
+
 	body = strings.Replace(body,
 		`    configURL: (cn) => "/api/v1/users/"+encodeURIComponent(cn)+"/config",`,
 		`    configURL: (cn) => "/api/v1/users/"+encodeURIComponent(cn)+"/config",
@@ -75,22 +89,31 @@ func rewriteDashboard(body string) string {
 	body = strings.ReplaceAll(body,
 		`h("button",{class:"btn btn--sm",title:"download .ovpn", onclick:()=>downloadOVPN(u.username)}, "↓ .ovpn"),`,
 		`h("button",{class:"btn btn--sm",title:"download .ovpn", onclick:()=>downloadOVPN(u.username)}, "↓ .ovpn"),
-        h("button",{class:"btn btn--sm",title:"other export formats", onclick:()=>downloadExportPrompt(u.username)}, "↓ more"),`,
+        h("button",{class:"btn btn--sm",title:"download PKCS#12", onclick:()=>downloadClientExport(u.username,"p12",true)}, "↓ .p12"),
+        h("button",{class:"btn btn--sm",title:"download PKCS#7", onclick:()=>downloadClientExport(u.username,"p7",false)}, "↓ .p7b"),
+        h("button",{class:"btn btn--sm",title:"download PKCS#8", onclick:()=>downloadClientExport(u.username,"p8",true)}, "↓ .p8"),
+        h("button",{class:"btn btn--sm",title:"download PKCS#1", onclick:()=>downloadClientExport(u.username,"p1",true)}, "↓ .p1"),
+        h("button",{class:"btn btn--sm",title:"download EasyRSA inline", onclick:()=>downloadClientExport(u.username,"inline",false)}, "↓ inline"),`,
 	)
 
 	const signOut = `function signOut(){`
-	if strings.Contains(body, signOut) && !strings.Contains(body, "function downloadExportPrompt(") {
-		exportJS := `function downloadExportPrompt(cn){
-  const format = (prompt("Export format: inline, p12, p7, p8, p1", "p12") || "").trim().toLowerCase();
-  if (!format) return;
-  if (!["inline","p12","p7","p8","p1"].includes(format)) { Toast.err("unsupported export format"); return; }
-  downloadClientExport(cn, format);
-}
-
-async function downloadClientExport(cn, format){
+	if strings.Contains(body, signOut) && !strings.Contains(body, "async function downloadClientExport(") {
+		exportJS := `async function downloadClientExport(cn, format, protectable){
   try {
     const t = API.token();
-    const res = await fetch(API.exportURL(cn, format), { headers: t ? { Authorization: "Bearer " + t } : {} });
+    let method = "GET";
+    let body;
+    const headers = t ? { Authorization: "Bearer " + t } : {};
+    if (protectable) {
+      const password = prompt("Export password (optional; leave blank for unprotected export)", "");
+      if (password === null) return;
+      if (password) {
+        method = "POST";
+        headers["Content-Type"] = "application/json";
+        body = JSON.stringify({password});
+      }
+    }
+    const res = await fetch(API.exportURL(cn, format), { method, headers, body });
     if (!res.ok) {
       const j = await res.json().catch(()=>({error:res.statusText}));
       throw new Error(j.error || res.statusText);

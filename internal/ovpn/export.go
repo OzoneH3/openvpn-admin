@@ -21,6 +21,7 @@ type clientExportSpec struct {
 	relPath     func(string) string
 	filenameExt string
 	contentType string
+	protectable bool
 }
 
 var clientExportSpecs = map[string]clientExportSpec{
@@ -29,6 +30,7 @@ var clientExportSpecs = map[string]clientExportSpec{
 		relPath:     func(cn string) string { return filepath.Join("pki", "private", cn+".p12") },
 		filenameExt: ".p12",
 		contentType: "application/x-pkcs12",
+		protectable: true,
 	},
 	"p7": {
 		command:     "export-p7",
@@ -41,23 +43,38 @@ var clientExportSpecs = map[string]clientExportSpec{
 		relPath:     func(cn string) string { return filepath.Join("pki", "private", cn+".p8") },
 		filenameExt: ".p8",
 		contentType: "application/pkcs8",
+		protectable: true,
 	},
 	"p1": {
 		command:     "export-p1",
 		relPath:     func(cn string) string { return filepath.Join("pki", "private", cn+".p1") },
 		filenameExt: ".p1",
 		contentType: "application/x-pem-file",
+		protectable: true,
 	},
 }
 
 // ExportClient generates an EasyRSA client credential in a supported format.
 func (m *Manager) ExportClient(ctx context.Context, cn, format string) (*ClientExport, error) {
+	return m.ExportClientProtected(ctx, cn, format, "")
+}
+
+// ExportClientProtected optionally protects formats containing private-key
+// material. Passwords are passed to EasyRSA through a temporary 0600 file and
+// are never placed directly in argv or persisted by the application.
+func (m *Manager) ExportClientProtected(ctx context.Context, cn, format, password string) (*ClientExport, error) {
 	if !validCN.MatchString(cn) {
 		return nil, fmt.Errorf("invalid common name: %q", cn)
+	}
+	if len(password) > 1024 {
+		return nil, fmt.Errorf("export password is too long")
 	}
 
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "ovpn" {
+		if password != "" {
+			return nil, fmt.Errorf("ovpn protection is set when the client is created")
+		}
 		data, err := m.BuildOVPN(cn)
 		if err != nil {
 			return nil, err
@@ -66,6 +83,9 @@ func (m *Manager) ExportClient(ctx context.Context, cn, format string) (*ClientE
 	}
 
 	if format == "inline" {
+		if password != "" {
+			return nil, fmt.Errorf("inline export uses the client key's existing protection")
+		}
 		return m.exportInline(ctx, cn)
 	}
 
@@ -73,10 +93,23 @@ func (m *Manager) ExportClient(ctx context.Context, cn, format string) (*ClientE
 	if !ok {
 		return nil, fmt.Errorf("unsupported export format: %q", format)
 	}
+	if password != "" && !spec.protectable {
+		return nil, fmt.Errorf("format %q does not contain private-key material to password-protect", format)
+	}
 
-	// EasyRSA 3.2.x accepts --batch and --nopass for these export commands,
-	// but does not provide the older --noinline global option.
-	args := []string{"--batch", "--nopass", spec.command, cn}
+	args := []string{"--batch"}
+	if password == "" {
+		args = append(args, "--nopass")
+	} else {
+		passFile, err := writePassphraseFile(password)
+		if err != nil {
+			return nil, fmt.Errorf("prepare export password: %w", err)
+		}
+		defer os.Remove(passFile)
+		args = append(args, "--passout=file:"+passFile)
+	}
+	args = append(args, spec.command, cn)
+
 	cmd := exec.CommandContext(ctx, "./easyrsa", args...)
 	cmd.Dir = m.EasyRSADir
 	if out, err := cmd.CombinedOutput(); err != nil {
