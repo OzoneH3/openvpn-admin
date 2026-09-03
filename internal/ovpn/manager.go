@@ -83,6 +83,7 @@ func (m *Manager) AddClient(ctx context.Context, cn string) ([]byte, error) {
 				return nil, fmt.Errorf("client %q already exists", cn)
 			}
 		}
+	}
 
 	// The CA may be encrypted while the new client private key remains
 	// passwordless via the command-level "nopass" option.
