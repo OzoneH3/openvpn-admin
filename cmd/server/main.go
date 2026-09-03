@@ -35,6 +35,10 @@ func main() {
 	)
 	mgr.ListenPort = cfg.OpenVPNListenPort
 	mgr.ListenProto = cfg.OpenVPNListenProto
+	mgr.ClientTemplatePath = cfg.ClientTemplatePath
+	mgr.TLSCryptKeyPath = cfg.TLSCryptKeyPath
+	mgr.TLSAuthKeyPath = cfg.TLSAuthKeyPath
+	mgr.CAPasswordFile = cfg.CAPasswordFile
 
 	app := api.NewServer(nil, nil, api.ServerConfig{
 		JWTSecret:      cfg.JWTSecret,
