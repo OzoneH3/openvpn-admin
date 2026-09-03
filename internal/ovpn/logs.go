@@ -10,9 +10,9 @@ import (
 
 // LogEntry is a structured journal line for the Logs page.
 type LogEntry struct {
-	Timestamp time.Time `json:"ts"`
-	Level     string    `json:"level"` // info | warn | err | ok
-	Message   string    `json:"msg"`
+	Timestamp *time.Time `json:"ts,omitempty"`
+	Level     string     `json:"level"` // info | warn | err | ok
+	Message   string     `json:"msg"`
 }
 
 // TailJournal returns the last n entries from the openvpn-server unit
@@ -49,16 +49,18 @@ func (m *Manager) TailJournal(ctx context.Context, n int) ([]LogEntry, error) {
 	return out, sc.Err()
 }
 
-// parseJournalLine splits a `short-iso` journalctl line into ts / level / msg.
-// Format: "2026-05-01T09:56:45+0800 host openvpn[3097]: chris/.. message"
+// parseJournalLine splits a journalctl short-iso line into ts / level / msg.
+// systemd versions differ slightly in whether fractional seconds are emitted
+// and whether the timezone offset contains a colon, so accept the common
+// variants rather than turning a parse failure into Go's year-1 zero time.
 func parseJournalLine(line string) LogEntry {
 	e := LogEntry{Level: "info", Message: line}
 	parts := strings.SplitN(line, " ", 4)
 	if len(parts) < 4 {
 		return e
 	}
-	if t, err := time.Parse("2006-01-02T15:04:05-0700", parts[0]); err == nil {
-		e.Timestamp = t
+	if t, ok := parseJournalTimestamp(parts[0]); ok {
+		e.Timestamp = &t
 	}
 	e.Message = parts[3]
 	low := strings.ToLower(e.Message)
@@ -75,6 +77,21 @@ func parseJournalLine(line string) LogEntry {
 		e.Level = "ok"
 	}
 	return e
+}
+
+func parseJournalTimestamp(value string) (time.Time, bool) {
+	layouts := []string{
+		"2006-01-02T15:04:05-0700",
+		"2006-01-02T15:04:05.999999-0700",
+		time.RFC3339,
+		time.RFC3339Nano,
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func itoa(n int) string {
