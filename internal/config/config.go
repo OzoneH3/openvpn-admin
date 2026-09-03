@@ -35,25 +35,38 @@ type Config struct {
 	AdminUser     string
 	AdminPassword string
 
-	// OpenVPN service unit name and status file location
-	StatusFile  string
-	ServiceUnit string
+	// OpenVPN service status. When OpenVPNListenPort is set (>0), the
+	// dashboard checks the local TCP/UDP listener first; otherwise it uses
+	// ServiceUnit. StatusFile remains the source for connected-session data.
+	StatusFile        string
+	ServiceUnit       string
+	OpenVPNListenPort int
+	OpenVPNListenProto string
 }
 
 // Load loads configuration from environment variables.
 func Load() (*Config, error) {
 	cfg := &Config{
-		DBPath:       getEnv("DB_PATH", "./data/openvpn.db"),
-		Port:         getEnv("PORT", "8080"),
-		EasyRSAPath:  getEnv("EASYRSA_PATH", "/etc/openvpn/easy-rsa"),
-		OpenVPNPath:  getEnv("OPENVPN_PATH", "/etc/openvpn"),
-		ClientsDir:   getEnv("CLIENTS_DIR", "/etc/openvpn/clients"),
-		WorkerCount:  getEnvInt("WORKER_COUNT", 2),
-		QueueSize:    getEnvInt("QUEUE_SIZE", 100),
-		DashboardDir: getEnv("DASHBOARD_DIR", "./dashboard"),
-		AdminUser:    getEnv("ADMIN_USER", "admin"),
-		StatusFile:   getEnv("STATUS_FILE", "/var/log/openvpn/status.log"),
-		ServiceUnit:  getEnv("SERVICE_UNIT", "openvpn-server@server.service"),
+		DBPath:             getEnv("DB_PATH", "./data/openvpn.db"),
+		Port:               getEnv("PORT", "8080"),
+		EasyRSAPath:        getEnv("EASYRSA_PATH", "/etc/openvpn/easy-rsa"),
+		OpenVPNPath:        getEnv("OPENVPN_PATH", "/etc/openvpn"),
+		ClientsDir:         getEnv("CLIENTS_DIR", "/etc/openvpn/clients"),
+		WorkerCount:        getEnvInt("WORKER_COUNT", 2),
+		QueueSize:          getEnvInt("QUEUE_SIZE", 100),
+		DashboardDir:       getEnv("DASHBOARD_DIR", "./dashboard"),
+		AdminUser:          getEnv("ADMIN_USER", "admin"),
+		StatusFile:         getEnv("STATUS_FILE", "/var/log/openvpn/status.log"),
+		ServiceUnit:        getEnv("SERVICE_UNIT", "openvpn-server@server.service"),
+		OpenVPNListenPort:  getEnvInt("OPENVPN_LISTEN_PORT", 0),
+		OpenVPNListenProto: strings.ToLower(getEnv("OPENVPN_LISTEN_PROTO", "udp")),
+	}
+
+	if cfg.OpenVPNListenPort < 0 || cfg.OpenVPNListenPort > 65535 {
+		return nil, fmt.Errorf("OPENVPN_LISTEN_PORT must be between 0 and 65535")
+	}
+	if cfg.OpenVPNListenProto != "udp" && cfg.OpenVPNListenProto != "tcp" {
+		return nil, fmt.Errorf("OPENVPN_LISTEN_PROTO must be udp or tcp")
 	}
 
 	jwtSecret, err := readRequiredSecret("JWT_SECRET", "JWT_SECRET_FILE")
