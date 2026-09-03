@@ -8,50 +8,49 @@ import (
 	"strings"
 )
 
-// Config holds application configuration
+// Config holds application configuration.
 type Config struct {
-	// Database
 	DBPath string
+	Port   string
 
-	// HTTP Server
-	Port string
-
-	// EasyRSA paths
 	EasyRSAPath string
 	OpenVPNPath string
 	ClientsDir  string
 
-	// Security
+	ClientTemplatePath string
+	TLSCryptKeyPath    string
+	TLSAuthKeyPath     string
+	CAPasswordFile     string
+
 	JWTSecret string
 
-	// Worker
 	WorkerCount int
 	QueueSize   int
 
-	// SPA dashboard directory served at /
 	DashboardDir string
 
-	// Admin auth
 	AdminUser     string
 	AdminPassword string
 
-	// OpenVPN service status. When OpenVPNListenPort is set (>0), the
-	// dashboard checks the local TCP/UDP listener first; otherwise it uses
-	// ServiceUnit. StatusFile remains the source for connected-session data.
-	StatusFile        string
-	ServiceUnit       string
-	OpenVPNListenPort int
+	StatusFile         string
+	ServiceUnit        string
+	OpenVPNListenPort  int
 	OpenVPNListenProto string
 }
 
 // Load loads configuration from environment variables.
 func Load() (*Config, error) {
+	openVPNPath := getEnv("OPENVPN_PATH", "/etc/openvpn")
 	cfg := &Config{
 		DBPath:             getEnv("DB_PATH", "./data/openvpn.db"),
 		Port:               getEnv("PORT", "8080"),
 		EasyRSAPath:        getEnv("EASYRSA_PATH", "/etc/openvpn/easy-rsa"),
-		OpenVPNPath:        getEnv("OPENVPN_PATH", "/etc/openvpn"),
+		OpenVPNPath:        openVPNPath,
 		ClientsDir:         getEnv("CLIENTS_DIR", "/etc/openvpn/clients"),
+		ClientTemplatePath: getEnv("CLIENT_TEMPLATE_PATH", filepath.Join(openVPNPath, "client-template.txt")),
+		TLSCryptKeyPath:    getEnv("TLS_CRYPT_KEY_PATH", filepath.Join(openVPNPath, "tls-crypt.key")),
+		TLSAuthKeyPath:     getEnv("TLS_AUTH_KEY_PATH", filepath.Join(openVPNPath, "tls-auth.key")),
+		CAPasswordFile:     strings.TrimSpace(os.Getenv("CA_PASSWORD_FILE")),
 		WorkerCount:        getEnvInt("WORKER_COUNT", 2),
 		QueueSize:          getEnvInt("QUEUE_SIZE", 100),
 		DashboardDir:       getEnv("DASHBOARD_DIR", "./dashboard"),
@@ -67,6 +66,13 @@ func Load() (*Config, error) {
 	}
 	if cfg.OpenVPNListenProto != "udp" && cfg.OpenVPNListenProto != "tcp" {
 		return nil, fmt.Errorf("OPENVPN_LISTEN_PROTO must be udp or tcp")
+	}
+	if cfg.CAPasswordFile != "" {
+		if info, err := os.Stat(cfg.CAPasswordFile); err != nil {
+			return nil, fmt.Errorf("CA_PASSWORD_FILE: %w", err)
+		} else if info.IsDir() {
+			return nil, fmt.Errorf("CA_PASSWORD_FILE points to a directory")
+		}
 	}
 
 	jwtSecret, err := readRequiredSecret("JWT_SECRET", "JWT_SECRET_FILE")
