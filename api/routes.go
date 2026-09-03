@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/shutcode/openvpn-admin/internal/auth"
 	"github.com/shutcode/openvpn-admin/internal/ovpn"
 	"github.com/shutcode/openvpn-admin/internal/service"
-	"github.com/google/uuid"
 )
 
 // Server holds all dependencies for the API server
@@ -76,6 +76,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/users/", s.handleUserByID())
 		mux.HandleFunc("/api/jobs", s.handleJobs())
 	}
+
+	// Public deployment prefix. Keep the existing /api routes as the internal
+	// canonical handlers, and strip /ovpn before dispatching back through mux.
+	// This lets the SPA live entirely under /ovpn while preserving localhost
+	// compatibility for existing scripts and health checks.
+	mux.Handle("/ovpn/api/", http.StripPrefix("/ovpn", mux))
 
 	if s.config.DashboardDir != "" {
 		mux.HandleFunc("/", staticHandler(s.config.DashboardDir))
