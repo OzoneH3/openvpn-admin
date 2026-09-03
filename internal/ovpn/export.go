@@ -74,7 +74,9 @@ func (m *Manager) ExportClient(ctx context.Context, cn, format string) (*ClientE
 		return nil, fmt.Errorf("unsupported export format: %q", format)
 	}
 
-	args := []string{"--batch", "--nopass", "--noinline", spec.command, cn}
+	// EasyRSA 3.2.x accepts --batch and --nopass for these export commands,
+	// but does not provide the older --noinline global option.
+	args := []string{"--batch", "--nopass", spec.command, cn}
 	cmd := exec.CommandContext(ctx, "./easyrsa", args...)
 	cmd.Dir = m.EasyRSADir
 	if out, err := cmd.CombinedOutput(); err != nil {
