@@ -82,6 +82,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	if s.config.Manager != nil {
 		v1 := NewV1Server(s.config.Manager, s.config.AdminUser, s.config.AdminPassword, s.jwtManager)
 		v1.Register(mux)
+		v1.RegisterExports(mux)
 	}
 
 	// Auth routes
