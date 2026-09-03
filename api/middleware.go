@@ -44,18 +44,10 @@ func Chain(middlewares ...Middleware) Middleware {
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(wrapped, r)
-
 		duration := time.Since(start)
-		log.Printf("[%s] %s %s - %d - %v",
-			r.Method,
-			r.URL.Path,
-			r.RemoteAddr,
-			wrapped.statusCode,
-			duration,
-		)
+		log.Printf("[%s] %s %s - %d - %v", r.Method, r.URL.Path, r.RemoteAddr, wrapped.statusCode, duration)
 	})
 }
 
@@ -101,19 +93,20 @@ func CORSMiddleware(allowedOrigins []string) Middleware {
 			allowed := wildcard || explicitlyAllowed
 			if !allowed {
 				if r.Method == http.MethodOptions {
-				http.Error(w, "CORS origin denied", http.StatusForbidden)
+					http.Error(w, "CORS origin denied", http.StatusForbidden)
 					return
 				}
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			if wildcard {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
-			} else {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
+			// Wildcard mode is intentionally non-credentialed. We reflect the
+			// request origin for backwards compatibility with existing clients,
+			// but never emit Allow-Credentials unless the origin is explicitly listed.
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+			if explicitlyAllowed && !wildcard {
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
-				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
@@ -123,7 +116,6 @@ func CORSMiddleware(allowedOrigins []string) Middleware {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
-
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -138,19 +130,16 @@ func AuthMiddleware(jwtManager *auth.JWTManager) Middleware {
 				writeError(w, http.StatusUnauthorized, "Authorization header required")
 				return
 			}
-
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 				writeError(w, http.StatusUnauthorized, "Invalid authorization header format")
 				return
 			}
-
 			claims, err := jwtManager.ValidateAccessToken(parts[1])
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, fmt.Sprintf("Invalid token: %v", err))
 				return
 			}
-
 			ctx := auth.ContextWithClaims(r.Context(), claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -166,12 +155,10 @@ func RequireRole(role string) Middleware {
 				writeError(w, http.StatusUnauthorized, "Authentication required")
 				return
 			}
-
 			if claims.Role != role && claims.Role != "admin" {
 				writeError(w, http.StatusForbidden, "Insufficient permissions")
 				return
 			}
-
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -201,17 +188,11 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(responseEnvelope{
-		Success: true,
-		Data:    data,
-	})
+	json.NewEncoder(w).Encode(responseEnvelope{Success: true, Data: data})
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(responseEnvelope{
-		Success: false,
-		Error:   &message,
-	})
+	json.NewEncoder(w).Encode(responseEnvelope{Success: false, Error: &message})
 }
